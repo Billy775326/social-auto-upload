@@ -460,9 +460,8 @@ class DouYinBaseUploader(BaseVideoUploader):
         await page.keyboard.press("Control+KeyA")
         await page.keyboard.press("Delete")
 
-        # 先填正文描述，再填 #话题（此前 description 参数未被写入，导致抖音只有标签没有正文）
-        if description and description.strip():
-            await page.keyboard.type(description.strip())
+        if description:
+            await page.keyboard.insert_text(description)
 
         for tag in tags or []:
             await page.keyboard.type(" #" + tag)
@@ -1139,47 +1138,19 @@ class DouYinVideo(DouYinBaseUploader):
         if self.publish_strategy == DOUYIN_PUBLISH_STRATEGY_SCHEDULED and self.publish_date != 0:
             await self.set_schedule_time_douyin(page, self.publish_date)
 
-        sms_prompt_logged = False
-        while True:
-            try:
-                # 移除会拦截发布按钮点击的新手引导/话题下拉浮层
-                await page.evaluate(
-                    "() => { document.querySelectorAll('.shepherd-element, .shepherd-modal-overlay-container, [class*=\"mention-wrapper\"]').forEach(e => e.remove()); }"
-                )
-                # 检测并处理短信验证码弹窗
-                sms_input = page.locator('input[placeholder*="验证码"], input[type="tel"], input[placeholder*="短信"], input[placeholder*="手机号"]').first
-                if await sms_input.count() and await sms_input.is_visible():
-                    douyin_logger.warning(_msg("📱", "检测到短信验证码弹窗"))
-                    # 点击「获取验证码」按钮（仅首次）
-                    get_code_btn = page.get_by_text("获取验证码").first
-                    if await get_code_btn.count() and await get_code_btn.is_visible():
-                        await get_code_btn.click()
-                        douyin_logger.info(_msg("📤", "已点击「获取验证码」，请查看手机短信"))
-                    code_file = os.path.join(BASE_DIR, "verify_code.txt")
-                    code = await _read_verify_code(code_file)
-                    if code:
-                        sms_prompt_logged = False
-                        await self._submit_sms_verify_code(page, sms_input, code, code_file)
-                    elif not sms_prompt_logged:
-                        douyin_logger.warning(_msg("⏳", f"等待验证码输入；可在交互终端直接输入，或写入文件: {code_file}"))
-                        sms_prompt_logged = True
-
-                # ── 正常发布流程 ──
-                publish_button = page.get_by_role("button", name="发布", exact=True)
-                if await publish_button.count():
-                    await publish_button.click(force=True)
-                await page.wait_for_url(
-                    "https://creator.douyin.com/creator-micro/content/manage**",
-                    timeout=3000,
-                )
-                douyin_logger.success(_msg("🥳", "视频发布成功，小人开心收工"))
-                break
-            except Exception:
-                await self.handle_auto_video_cover(page)
-                douyin_logger.info(_msg("🏃", "小人正在冲刺发布视频"))
-                if self.debug:
-                    await page.screenshot(full_page=True)
-                await asyncio.sleep(0.5)
+        # 移除会拦截发布按钮点击的新手引导/话题下拉浮层。
+        await page.evaluate(
+            "() => { document.querySelectorAll('.shepherd-element, .shepherd-modal-overlay-container, [class*=\"mention-wrapper\"]').forEach(e => e.remove()); }"
+        )
+        await self.handle_auto_video_cover(page)
+        publish_button = page.get_by_role("button", name="发布", exact=True)
+        await publish_button.wait_for(state="visible", timeout=30000)
+        await publish_button.click(force=True)
+        await self.wait_for_publish_result(
+            page,
+            "视频",
+            verification_handler=lambda: self.handle_sms_verification(page),
+        )
 
         await context.storage_state(path=self.account_file)
         douyin_logger.success(_msg("🥳", "cookie 更新完毕"))
@@ -1257,17 +1228,14 @@ class DouYinNote(DouYinBaseUploader):
         douyin_logger.info(_msg("📤", "小人正在上传图片"))
         await page.locator("div[class^='container'] input[accept*='image']").set_input_files(self.image_paths)
 
-        while True:
-            try:
-                await page.wait_for_url(
-                    "**/creator-micro/content/post/image?**",
-                    timeout=3000,
-                )
-                douyin_logger.info(_msg("🥳", "已经进入图文发布页面"))
-                break
-            except Exception:
-                douyin_logger.debug(_msg("🧍", "小人还在等图片上传完成"))
-                await asyncio.sleep(0.5)
+        try:
+            await page.wait_for_url(
+                "**/creator-micro/content/post/image?**",
+                timeout=180000,
+            )
+        except Exception as exc:
+            raise TimeoutError(f"等待抖音图片上传完成超时，当前页面: {page.url}") from exc
+        douyin_logger.info(_msg("🥳", "已经进入图文发布页面"))
 
         await asyncio.sleep(1)
         douyin_logger.info(_msg("✍️", "小人开始填标题、描述和话题"))
