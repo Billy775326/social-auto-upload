@@ -448,11 +448,45 @@ class DouYinBaseUploader(BaseVideoUploader):
         await asyncio.sleep(1)
 
     async def fill_title_and_description(self, page: Page, title: str, description: str, tags: list[str] | None = None):
-        # 2026-06 抖音发布页 DOM：标题=input[placeholder*=填写作品标题]，描述=div.zone-container[contenteditable]
-        # version_2(post/video) 发布页要等视频上传完才渲染表单（实测约 40s），故等待超时给到 120s
-        title_input = page.locator('input[placeholder*="填写作品标题"]').first
-        await title_input.wait_for(state="visible", timeout=120000)
-        await title_input.fill(title[:30])
+        # 抖音的视频和图文发布页会使用不同的标题控件与 placeholder。
+        # 按明确程度依次匹配，避免只认一个旧 DOM 后无提示等待两分钟。
+        title_selectors = (
+            'input[placeholder*="填写作品标题"]:visible',
+            'input[placeholder*="添加作品标题"]:visible',
+            'textarea[placeholder*="作品标题"]:visible',
+            'input[placeholder*="标题"]:visible',
+            '[contenteditable="true"][data-placeholder*="标题"]:visible',
+        )
+        title_input = None
+        title_selector = ""
+        for selector in title_selectors:
+            candidate = page.locator(selector).first
+            try:
+                await candidate.wait_for(state="visible", timeout=5000)
+            except Exception:
+                continue
+            title_input = candidate
+            title_selector = selector
+            break
+
+        if title_input is None:
+            controls = await page.locator("input, textarea, [contenteditable='true']").evaluate_all(
+                "els => els.map(el => ({tag: el.tagName, placeholder: el.getAttribute('placeholder'), dataPlaceholder: el.getAttribute('data-placeholder')})).slice(0, 30)"
+            )
+            screenshot_path = Path(BASE_DIR) / "logs" / "douyin_title_input_missing.png"
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            await page.screenshot(path=str(screenshot_path), full_page=True)
+            raise RuntimeError(
+                f"未找到抖音标题输入框，当前页面: {page.url}，控件信息: {controls}，页面截图: {screenshot_path}"
+            )
+
+        douyin_logger.debug(_msg("🔎", f"标题输入框匹配成功: {title_selector}"))
+        if "contenteditable" in title_selector:
+            await title_input.click()
+            await page.keyboard.press("Control+KeyA")
+            await page.keyboard.insert_text(title[:30])
+        else:
+            await title_input.fill(title[:30])
 
         description_editor = page.locator('div.zone-container[contenteditable="true"]').first
         await description_editor.wait_for(state="visible", timeout=120000)

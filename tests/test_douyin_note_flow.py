@@ -43,6 +43,30 @@ class DouyinNoteFlowTests(unittest.TestCase):
         page.keyboard.insert_text.assert_awaited_once_with("图文正文")
         page.keyboard.type.assert_awaited_once_with(" #测试")
 
+    def test_fill_title_falls_back_to_alternate_placeholder(self):
+        note = self.build_note()
+        missing_title = MagicMock()
+        missing_title.first = missing_title
+        missing_title.wait_for = AsyncMock(side_effect=TimeoutError)
+        alternate_title = MagicMock()
+        alternate_title.first = alternate_title
+        alternate_title.wait_for = AsyncMock()
+        alternate_title.fill = AsyncMock()
+        editor = MagicMock()
+        editor.first = editor
+        editor.wait_for = AsyncMock()
+        editor.click = AsyncMock()
+
+        page = MagicMock()
+        page.locator.side_effect = [missing_title, alternate_title, editor]
+        page.keyboard.press = AsyncMock()
+        page.keyboard.insert_text = AsyncMock()
+        page.keyboard.type = AsyncMock()
+
+        asyncio.run(note.fill_title_and_description(page, "备用标题", "正文", []))
+
+        alternate_title.fill.assert_awaited_once_with("备用标题")
+
     def test_upload_note_clicks_publish_only_once(self):
         note = self.build_note()
         note.fill_title_and_description = AsyncMock()
